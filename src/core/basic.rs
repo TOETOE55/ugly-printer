@@ -128,7 +128,7 @@ fn be<'a, 'b>(
             }
             Doc::Nest(j, x) => {
                 stack.push((nested + *j, x));
-                col = nested;
+                col = dbg!(nested);
             }
             Doc::FlatAlt(x, _) => stack.push((nested, x)),
             Doc::Union(x, y) => {
@@ -139,11 +139,11 @@ fn be<'a, 'b>(
                 be(w, row, col, stack, arena, linear);
                 if linear.fits(w - col) {
                     break;
-                } else {
-                    *stack = stack_saved;
-                    *linear = linear_saved;
-                    stack.push((nested, y));
                 }
+
+                *stack = stack_saved;
+                *linear = linear_saved;
+                stack.push((nested, y));
             }
             Column(f) => {
                 stack.push((nested, arena.alloc(f(col))))

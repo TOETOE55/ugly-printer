@@ -1,11 +1,11 @@
-use crate::core::traits::{best, Doc, SimpleDocElem, TranslationControl, FlattenableDoc, DocHolder, TransState};
+use crate::core::traits::{best, Doc, SimpleDocElem, TranslationControl, FlattenableDoc, TransState};
 use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Empty;
 
 impl<'d> Doc<'d> for Empty {
-    fn translate<'a>(&'a self, _state: &mut TransState<'a, 'd>, _holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, _state: &mut TransState<'a, 'd>) -> TranslationControl {
         TranslationControl::Continue
     }
 }
@@ -26,10 +26,10 @@ pub fn empty() -> Empty {
 pub struct Line;
 
 impl<'d> Doc<'d> for Line {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+        state.append(SimpleDocElem::Line(state.nesting));
         state.row += 1;
         state.index += 1;
-        state.append(SimpleDocElem::Line(state.nesting));
         TranslationControl::Continue
     }
 }
@@ -40,10 +40,10 @@ pub struct Text<'a> {
 }
 
 impl<'d> Doc<'d> for Text<'_> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, _holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+        state.append(SimpleDocElem::Text(self.txt));
         state.col += self.txt.len();
         state.index += self.txt.len();
-        state.append(SimpleDocElem::Text(self.txt));
         TranslationControl::Continue
     }
 }
@@ -85,9 +85,9 @@ impl<D> Nest<D> {
 }
 
 impl<'d, D: Doc<'d> + 'd> Doc<'d> for Nest<D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, holder: DocHolder<'a, 'd>) -> TranslationControl {
-        state.col = state.nesting;
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
         state.push(state.nesting + self.nest, &self.doc);
+        state.col = state.nesting;
         TranslationControl::Continue
     }
 }
@@ -113,7 +113,7 @@ impl<A, B> Cat<A, B> {
 }
 
 impl<'d, A: Doc<'d> + 'd, B: Doc<'d> + 'd> Doc<'d> for Cat<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
         state.push(state.nesting, &self.b);
         state.push(state.nesting, &self.a);
         TranslationControl::Continue
@@ -141,12 +141,12 @@ impl<A, B> Union<A, B> {
 }
 
 impl<'d, A: Doc<'d> + 'd, B: Doc<'d> + 'd> Doc<'d> for Union<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
         let state_saved = state.clone();
 
-        state.push(state.nesting, &self.a);
-        best(state, holder);
-        if state.fits(state.page_width - state.col) {
+        state.push(state_saved.nesting, &self.a);
+        best(state);
+        if state.fits(state_saved.page_width - state_saved.col) {
             return TranslationControl::Break;
         }
 
@@ -177,7 +177,7 @@ impl<A, B> FlatAlt<A, B> {
 }
 
 impl<'d, A: Doc<'d> + 'd, B> Doc<'d> for FlatAlt<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, _holder: DocHolder<'a, 'd>) -> TranslationControl {
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
         state.push(state.nesting, &self.a);
         TranslationControl::Continue
     }
@@ -210,8 +210,8 @@ impl<F> Clone for Column<F> {
 }
 
 impl<'d, D: Doc<'d> + 'd, F: Fn(usize) -> D> Doc<'d> for Column<F> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>, holder: DocHolder<'a, 'd>) -> TranslationControl {
-        state.push(state.nesting, holder.hold((self.f)(state.col)));
+    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+        state.push(state.nesting, state.hold((self.f)(state.col)));
         TranslationControl::Continue
     }
 }
