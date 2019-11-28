@@ -1,38 +1,66 @@
-#[derive(Clone, Debug)]
-pub enum Doc {
+
+use Doc::*;
+use std::rc::Rc;
+use std::fmt::{Display, Formatter, Error};
+use typed_arena::Arena;
+
+#[derive(Clone)]
+pub enum Doc<'a> {
     Nil,
     Line,
     Nest(usize, Box<Self>),
     Text(String),
     Cat(Box<Self>, Box<Self>),
     Union(Box<Self>, Box<Self>),
-    FlatAt(Box<Self>, Box<Self>),
+    FlatAlt(Box<Self>, Box<Self>),
+    Column(Rc<dyn Fn(usize) -> Self + 'a>),
+    Row(Rc<dyn Fn(usize) -> Self + 'a>),
+    Nesting(Rc<dyn Fn(usize) -> Self + 'a>),
 }
 
-use Doc::*;
-use crate::core::traits::{SimpleDoc, SimpleDocElem};
 
-pub fn nil() -> Doc {
+pub fn nil<'a>() -> Doc<'a> {
     Nil
 }
 
-pub fn text(txt: &str) -> Doc {
+pub fn text<'a>(txt: &str) -> Doc<'a> {
     Text(txt.to_string())
 }
 
-pub fn space() -> Doc {
+pub fn space<'a>() -> Doc<'a> {
     text(" ")
 }
 
-pub fn line() -> Doc {
-    FlatAt(Box::new(Line), Box::new(space()))
+pub fn line<'a>() -> Doc<'a> {
+    FlatAlt(Box::new(Line), Box::new(space()))
 }
 
-pub fn hard_line() -> Doc {
+pub fn hard_line<'a>() -> Doc<'a> {
     Line
 }
 
-impl Doc {
+pub fn column<'a, F>(f: F) -> Doc<'a>
+    where
+        F: Fn(usize) -> Doc<'a> + 'a
+{
+    Column(Rc::new(f))
+}
+
+pub fn row<'a, F>(f: F) -> Doc<'a>
+    where
+        F: Fn(usize) -> Doc<'a> + 'a
+{
+    Row(Rc::new(f))
+}
+
+pub fn nesting<'a, F>(f: F) -> Doc<'a>
+    where
+        F: Fn(usize) -> Doc<'a> + 'a
+{
+    Nesting(Rc::new(f))
+}
+
+impl<'a> Doc<'a> {
     pub fn nest(self, nested: usize) -> Self {
         Nest(nested, Box::new(self))
     }
@@ -57,8 +85,11 @@ impl Doc {
         match self {
             Nest(nested, x) => x.flatten().nest(nested),
             Cat(x, y) => x.flatten().cat(y.flatten()),
-            FlatAt(_, y) => *y,
+            FlatAlt(_, y) => *y,
             Union(x, _) => x.flatten(),
+            Column(f) => column(move |col| f(col).flatten()),
+            Row(f) => row(move |col| f(col).flatten()),
+            Nesting(f) => nesting(move |col| f(col).flatten()),
             other => other,
         }
     }
@@ -66,17 +97,18 @@ impl Doc {
     pub fn pretty(&self, w: usize) -> String {
         let mut linear = SimpleDoc::default();
         let mut stack = vec![(0, self)];
-        be(w, 0, 0, &mut stack, &mut linear);
+        let arena = Arena::new();
+        be(w, 0, 0, &mut stack, &arena, &mut linear);
         format!("{}", linear)
     }
 }
 
-
-fn be<'a>(
+fn be<'a, 'b>(
     w: usize,
     mut row: usize,
     mut col: usize,
-    stack: &mut Vec<(usize, &'a Doc)>,
+    stack: &mut Vec<(usize, &'a Doc<'b>)>,
+    arena: &'a Arena<Doc<'b>>,
     linear: &mut SimpleDoc<'a>,
 ) {
     while let Some((nested, doc)) = stack.pop() {
@@ -87,8 +119,8 @@ fn be<'a>(
                 row += 1;
             }
             Doc::Text(txt) => {
-                linear.0.push(SimpleDocElem::Text(txt));
                 col += txt.len();
+                linear.0.push(SimpleDocElem::Text(txt));
             }
             Doc::Cat(x, y) => {
                 stack.push((nested, y));
@@ -98,13 +130,13 @@ fn be<'a>(
                 stack.push((nested + *j, x));
                 col = nested;
             }
-            Doc::FlatAt(x, _) => stack.push((nested, x)),
+            Doc::FlatAlt(x, _) => stack.push((nested, x)),
             Doc::Union(x, y) => {
                 let stack_saved = stack.clone();
                 let linear_saved = linear.clone();
 
                 stack.push((nested, x));
-                be(w, row, col, stack, linear);
+                be(w, row, col, stack, arena, linear);
                 if linear.fits(w - col) {
                     break;
                 } else {
@@ -113,6 +145,57 @@ fn be<'a>(
                     stack.push((nested, y));
                 }
             }
+            Column(f) => {
+                stack.push((nested, arena.alloc(f(col))))
+            }
+            Row(f) => {
+                stack.push((nested, arena.alloc(f(row))))
+            }
+            Nesting(f) => {
+                stack.push((nested, arena.alloc(f(nested))))
+            }
         }
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub enum SimpleDocElem<'a> {
+    Text(&'a str),
+    Line(usize),
+}
+
+#[derive(Clone, Default)]
+pub struct SimpleDoc<'a>(pub Vec<SimpleDocElem<'a>>);
+
+impl SimpleDoc<'_> {
+    pub fn fits(&self, mut w: usize) -> bool {
+        for elem in &self.0 {
+            match elem {
+                SimpleDocElem::Text(txt) => {
+                    if w < txt.len() {
+                        return false;
+                    }
+                    w -= txt.len();
+                }
+                SimpleDocElem::Line(_) => break,
+            }
+        }
+        true
+    }
+}
+
+impl Display for SimpleDoc<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        for elem in &self.0 {
+            match elem {
+                SimpleDocElem::Text(s) => write!(f, "{}", s)?,
+                SimpleDocElem::Line(nested) => {
+                    let spaces = vec![' '; *nested as usize].into_iter().collect::<String>();
+                    write!(f, "\n{}", spaces)?
+                }
+            }
+        }
+        Ok(())
     }
 }
