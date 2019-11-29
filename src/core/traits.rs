@@ -46,16 +46,7 @@ impl<'a, 'd> TransState<'a, 'd> {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct DocHolder<'a, 'd> {
-    alloc: &'a Arena<Box<dyn Doc<'d> + 'd>>
-}
 
-impl<'a, 'd> DocHolder<'a, 'd> {
-    pub fn hold<D: Doc<'d> + 'd>(self, doc: D) -> &'a mut (dyn Doc<'d> + 'd) {
-        self.alloc.alloc(Box::new(doc))
-    }
-}
 
 pub trait Doc<'d> {
     fn translate<'a>(

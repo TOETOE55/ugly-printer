@@ -1,9 +1,8 @@
 use typed_arena::Arena;
-use pprint::core::combinator::text;
-use pprint::core::traits::{Doc, FlattenableDoc, pretty};
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::ops::Deref;
+use pprint::core::basic::text;
 
 #[derive(Clone)]
 enum Tree {
@@ -65,5 +64,5 @@ fn main() {
         .nest(2)
         .cat_with_line(text("!")).group();
     let w = 20;
-    println!("{}", pretty(&test, w));
+    println!("{}", test.pretty(w));
 }

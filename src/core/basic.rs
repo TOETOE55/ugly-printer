@@ -18,6 +18,41 @@ pub enum Doc<'a> {
     Nesting(Rc<dyn Fn(usize) -> Self + 'a>),
 }
 
+#[derive(Clone)]
+pub struct TransState<'a, 'd> {
+    pub page_width: usize,
+    pub row: usize,
+    pub col: usize,
+    pub index: usize,
+
+    stack: Vec<(usize, &'a Doc<'d>)>,
+    result: SimpleDoc<'a>,
+    holder: &'a Arena<Doc<'d>>,
+}
+
+impl<'a, 'd> TransState<'a, 'd> {
+    pub fn pop(&mut self) -> Option<(usize, &'a Doc<'d>)> {
+        self.stack.pop()
+    }
+
+    pub fn push(&mut self, nested: usize, doc: &'a Doc<'d>) -> &mut Self {
+        self.stack.push((nested, doc));
+        self
+    }
+
+    pub fn append(&mut self, elem: SimpleDocElem<'a>) -> &mut Self {
+        self.result.0.push(elem);
+        self
+    }
+
+    pub fn fits(&self, w: usize) -> bool {
+        self.result.fits(w)
+    }
+
+    pub fn hold(&self, doc: Doc<'d>) -> &'a mut Doc<'d> {
+        self.holder.alloc(doc)
+    }
+}
 
 pub fn nil<'a>() -> Doc<'a> {
     Nil
@@ -95,64 +130,63 @@ impl<'a> Doc<'a> {
     }
 
     pub fn pretty(&self, w: usize) -> String {
-        let mut linear = SimpleDoc::default();
-        let mut stack = vec![(0, self)];
-        let arena = Arena::new();
-        be(w, 0, 0, &mut stack, &arena, &mut linear);
-        format!("{}", linear)
+        let mut state = TransState {
+            page_width: w,
+            row: 0,
+            col: 0,
+            index: 0,
+            stack: vec![(0, self)],
+            result: Default::default(),
+            holder: &Default::default()
+        };
+        be(&mut state);
+        format!("{}", state.result)
     }
 }
 
-fn be<'a, 'b>(
-    w: usize,
-    mut row: usize,
-    mut col: usize,
-    stack: &mut Vec<(usize, &'a Doc<'b>)>,
-    arena: &'a Arena<Doc<'b>>,
-    linear: &mut SimpleDoc<'a>,
-) {
-    while let Some((nested, doc)) = stack.pop() {
+fn be(state: &mut TransState) {
+    while let Some((nested, doc)) = state.pop() {
         match doc {
             Doc::Nil => {}
             Doc::Line => {
-                linear.0.push(SimpleDocElem::Line(nested));
-                row += 1;
+                state.append(SimpleDocElem::Line(nested));
+                state.row += 1;
             }
             Doc::Text(txt) => {
-                col += txt.len();
-                linear.0.push(SimpleDocElem::Text(txt));
+                state.col += txt.len();
+                state.append(SimpleDocElem::Text(txt));
             }
             Doc::Cat(x, y) => {
-                stack.push((nested, y));
-                stack.push((nested, x));
+                state.push(nested, y)
+                    .push(nested, x);
             }
             Doc::Nest(j, x) => {
-                stack.push((nested + *j, x));
-                col = dbg!(nested);
+                state.push(nested + *j, x);
+                state.col = nested;
             }
-            Doc::FlatAlt(x, _) => stack.push((nested, x)),
+            Doc::FlatAlt(x, _) => {
+                state.push(nested, x);
+            },
             Doc::Union(x, y) => {
-                let stack_saved = stack.clone();
-                let linear_saved = linear.clone();
+                let state_save = state.clone();
 
-                stack.push((nested, x));
-                be(w, row, col, stack, arena, linear);
-                if linear.fits(w - col) {
+                state.push(nested, x);
+                be(state);
+                if state.fits(state_save.page_width - state_save.col) {
                     break;
                 }
 
-                *stack = stack_saved;
-                *linear = linear_saved;
-                stack.push((nested, y));
+                *state = state_save;
+                state.push(nested, y);
             }
             Column(f) => {
-                stack.push((nested, arena.alloc(f(col))))
+                state.push(nested, state.hold(f(state.col)));
             }
             Row(f) => {
-                stack.push((nested, arena.alloc(f(row))))
+                state.push(nested, state.hold(f(state.row)));
             }
             Nesting(f) => {
-                stack.push((nested, arena.alloc(f(nested))))
+                state.push(nested, state.hold(f(nested)));
             }
         }
     }
