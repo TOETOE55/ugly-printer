@@ -2,7 +2,8 @@ use typed_arena::Arena;
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::ops::Deref;
-use pprint::core::basic::text;
+use pprint::core::combinator::{text, column};
+use pprint::core::traits::{Doc, FlattenableDoc};
 
 #[derive(Clone)]
 enum Tree {
@@ -63,6 +64,8 @@ fn main() {
         .cat_with_line(text("world"))
         .nest(2)
         .cat_with_line(text("!")).group();
+
+    let test = column(|_| test).group();
     let w = 20;
     println!("{}", test.pretty(w));
 }

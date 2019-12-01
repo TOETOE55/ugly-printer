@@ -2,6 +2,7 @@ use crate::core::combinator::{line, space, Cat, FlatAlt, Line, Nest, Text, Union
 use std::fmt::{Display, Error, Formatter};
 use typed_arena::Arena;
 use std::rc::Rc;
+use std::ops::Try;
 
 #[derive(Copy, Clone, Debug)]
 pub enum TranslationControl {
@@ -9,30 +10,39 @@ pub enum TranslationControl {
     Continue,
 }
 
+impl Try for TranslationControl {
+    type Ok = ();
+    type Error = ();
+
+    fn into_result(self) -> Result<Self::Ok, Self::Error> {
+        match self {
+            TranslationControl::Break => Err(()),
+            TranslationControl::Continue => Ok(()),
+        }
+    }
+
+    fn from_error(v: Self::Error) -> Self {
+        Self::Break
+    }
+
+    fn from_ok(v: Self::Ok) -> Self {
+        Self::Continue
+    }
+}
+
 #[derive(Clone)]
-pub struct TransState<'a, 'd> {
+pub struct TransState {
     pub page_width: usize,
     pub nesting: usize,
     pub row: usize,
     pub col: usize,
     pub index: usize,
 
-    stack: Vec<(usize, &'a (dyn Doc<'d> + 'd))>,
-    result: SimpleDoc<'a>,
-    holder: &'a Arena<Box<dyn Doc<'d> + 'd>>,
+    result: SimpleDoc,
 }
 
-impl<'a, 'd> TransState<'a, 'd> {
-    pub fn pop(&mut self) -> Option<(usize, &'a (dyn Doc<'d> + 'd))> {
-        self.stack.pop()
-    }
-
-    pub fn push(&mut self, nested: usize, doc: &'a (dyn Doc<'d> + 'd)) -> &mut Self {
-        self.stack.push((nested, doc));
-        self
-    }
-
-    pub fn append(&mut self, elem: SimpleDocElem<'a>) -> &mut Self {
+impl TransState {
+    pub fn append(&mut self, elem: SimpleDocElem) -> &mut Self {
         self.result.0.push(elem);
         self
     }
@@ -41,36 +51,47 @@ impl<'a, 'd> TransState<'a, 'd> {
         self.result.fits(w)
     }
 
-    pub fn hold<D: Doc<'d> + 'd>(&self, doc: D) -> &'a mut (dyn Doc<'d> + 'd) {
-        self.holder.alloc(Box::new(doc))
-    }
 }
 
 
 
-pub trait Doc<'d> {
-    fn translate<'a>(
-        &'a self,
-        state: &mut TransState<'a, 'd>,
+pub trait Doc {
+    fn translate(
+        &self,
+        state: &mut TransState,
     ) -> TranslationControl;
 
-    fn cat<D: Doc<'d>>(self, rhs: D) -> Cat<Self, D>
+    fn pretty(&self, page_width: usize) -> String {
+        let mut state = TransState {
+            page_width,
+            nesting: 0,
+            row: 0,
+            col: 0,
+            index: 0,
+            result: SimpleDoc(vec![]),
+        };
+
+        self.translate(&mut state);
+        format!("{}", state.result)
+    }
+
+    fn cat<D: Doc>(self, rhs: D) -> Cat<Self, D>
     where
         Self: Sized,
     {
         Cat::new(self, rhs)
     }
 
-    fn cat_with_line<D: Doc<'d> + 'd>(self, rhs: D) -> Cat<Cat<Self, FlatAlt<Line, Text<'static>>>, D>
+    fn cat_with_line<D: Doc>(self, rhs: D) -> Cat<Cat<Self, FlatAlt<Line, Text<'static>>>, D>
     where
-        Self: Sized + 'd,
+        Self: Sized,
     {
         self.cat(line()).cat(rhs)
     }
 
-    fn cat_with_space<D: Doc<'d>>(self, rhs: D) -> Cat<Cat<Self, Text<'static>>, D>
+    fn cat_with_space<D: Doc>(self, rhs: D) -> Cat<Cat<Self, Text<'static>>, D>
     where
-        Self: Sized + 'd,
+        Self: Sized,
     {
         self.cat(space()).cat(rhs)
     }
@@ -82,7 +103,7 @@ pub trait Doc<'d> {
         Nest::new(nest, self)
     }
 
-    fn flat_alt<D: Doc<'d>>(self, rhs: D) -> FlatAlt<Self, D>
+    fn flat_alt<D: Doc>(self, rhs: D) -> FlatAlt<Self, D>
     where
         Self: Sized
     {
@@ -99,26 +120,26 @@ pub trait FlattenableDoc {
     }
 }
 
-impl<'d, D: Doc<'d> + ?Sized> Doc<'d> for &D {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl<D: Doc + ?Sized> Doc for &D {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         (**self).translate(state)
     }
 }
 
-impl<'d, D: Doc<'d> + ?Sized> Doc<'d> for &mut D {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl<D: Doc + ?Sized> Doc for &mut D {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         (**self).translate(state)
     }
 }
 
-impl<'d, D: Doc<'d> + ?Sized> Doc<'d> for Box<D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl<D: Doc + ?Sized> Doc for Box<D> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         (**self).translate(state)
     }
 }
 
-impl<'d, D: Doc<'d> + ?Sized> Doc<'d> for Rc<D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl<D: Doc + ?Sized> Doc for Rc<D> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         (**self).translate(state)
     }
 }
@@ -132,44 +153,17 @@ impl<D: FlattenableDoc> FlattenableDoc for Box<D> {
 }
 
 
-pub fn pretty<'d, D: Doc<'d> + 'd>(doc: &D, page_width: usize) -> String {
-    let arena = Arena::new();
-    let mut state = TransState {
-        page_width,
-        nesting: 0,
-        row: 0,
-        col: 0,
-        index: 0,
-        stack: vec![(0, doc as &(dyn Doc))],
-        result: SimpleDoc(vec![]),
-        holder: &arena
-    };
-
-    best(&mut state);
-    format!("{}", state.result)
-}
-
-pub fn best(state: &mut TransState) {
-    while let Some((nested, doc)) = state.pop() {
-        state.nesting = nested;
-        if let TranslationControl::Break =
-            doc.translate(state)
-        {
-            break;
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
-pub enum SimpleDocElem<'a> {
-    Text(&'a str),
+pub enum SimpleDocElem {
+    Text(String),
     Line(usize),
 }
 
 #[derive(Clone, Default)]
-pub struct SimpleDoc<'a>(pub Vec<SimpleDocElem<'a>>);
+pub struct SimpleDoc(pub Vec<SimpleDocElem>);
 
-impl SimpleDoc<'_> {
+impl SimpleDoc {
     pub fn fits(&self, mut w: usize) -> bool {
         for elem in &self.0 {
             match elem {
@@ -186,7 +180,7 @@ impl SimpleDoc<'_> {
     }
 }
 
-impl Display for SimpleDoc<'_> {
+impl Display for SimpleDoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         for elem in &self.0 {
             match elem {

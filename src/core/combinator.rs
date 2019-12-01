@@ -1,11 +1,11 @@
-use crate::core::traits::{best, Doc, SimpleDocElem, TranslationControl, FlattenableDoc, TransState};
+use crate::core::traits::{Doc, SimpleDocElem, TranslationControl, FlattenableDoc, TransState};
 use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Empty;
 
-impl<'d> Doc<'d> for Empty {
-    fn translate<'a>(&'a self, _state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl Doc for Empty {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         TranslationControl::Continue
     }
 }
@@ -25,8 +25,8 @@ pub fn empty() -> Empty {
 #[derive(Copy, Clone, Debug)]
 pub struct Line;
 
-impl<'d> Doc<'d> for Line {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl Doc for Line {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         state.append(SimpleDocElem::Line(state.nesting));
         state.row += 1;
         state.index += 1;
@@ -39,9 +39,9 @@ pub struct Text<'a> {
     txt: &'a str,
 }
 
-impl<'d> Doc<'d> for Text<'_> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
-        state.append(SimpleDocElem::Text(self.txt));
+impl Doc for Text<'_> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
+        state.append(SimpleDocElem::Text(self.txt.to_string()));
         state.col += self.txt.len();
         state.index += self.txt.len();
         TranslationControl::Continue
@@ -84,11 +84,11 @@ impl<D> Nest<D> {
     }
 }
 
-impl<'d, D: Doc<'d> + 'd> Doc<'d> for Nest<D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
-        state.push(state.nesting + self.nest, &self.doc);
+impl<D: Doc> Doc for Nest<D> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         state.col = state.nesting;
-        TranslationControl::Continue
+        state.nesting += self.nest;
+        self.doc.translate(state)
     }
 }
 
@@ -112,11 +112,10 @@ impl<A, B> Cat<A, B> {
     }
 }
 
-impl<'d, A: Doc<'d> + 'd, B: Doc<'d> + 'd> Doc<'d> for Cat<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
-        state.push(state.nesting, &self.b);
-        state.push(state.nesting, &self.a);
-        TranslationControl::Continue
+impl<A: Doc, B: Doc> Doc for Cat<A, B> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
+        self.a.translate(state)?;
+        self.b.translate(state)
     }
 }
 
@@ -140,19 +139,17 @@ impl<A, B> Union<A, B> {
     }
 }
 
-impl<'d, A: Doc<'d> + 'd, B: Doc<'d> + 'd> Doc<'d> for Union<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
+impl<A: Doc, B: Doc> Doc for Union<A, B> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
         let state_saved = state.clone();
 
-        state.push(state_saved.nesting, &self.a);
-        best(state);
+        self.a.translate(state)?;
         if state.fits(state_saved.page_width - state_saved.col) {
             return TranslationControl::Break;
         }
 
         *state = state_saved;
-        state.push(state.nesting, &self.b);
-        TranslationControl::Continue
+        self.b.translate(state)
     }
 }
 
@@ -176,10 +173,9 @@ impl<A, B> FlatAlt<A, B> {
     }
 }
 
-impl<'d, A: Doc<'d> + 'd, B> Doc<'d> for FlatAlt<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
-        state.push(state.nesting, &self.a);
-        TranslationControl::Continue
+impl<A: Doc, B> Doc for FlatAlt<A, B> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
+        self.a.translate(state)
     }
 }
 
@@ -191,27 +187,49 @@ impl<A, B: FlattenableDoc> FlattenableDoc for FlatAlt<A, B> {
     }
 }
 
-pub struct Column<F> {
-    f: Rc<F>
+pub struct Column<'a, D> {
+    f: Rc<dyn Fn(usize) -> D + 'a>
 }
 
-impl<F> Column<F> {
-    pub fn new(f: Rc<F>) -> Self {
+impl<'a, D> Column<'a, D> {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(usize) -> D + 'a
+    {
         Self {
-            f
+            f: Rc::new(f)
         }
     }
 }
 
-impl<F> Clone for Column<F> {
+impl<D> Clone for Column<'_ ,D> {
     fn clone(&self) -> Self {
-        Column::new(self.f.clone())
+        Self {
+            f: self.f.clone()
+        }
     }
 }
 
-impl<'d, D: Doc<'d> + 'd, F: Fn(usize) -> D> Doc<'d> for Column<F> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a, 'd>) -> TranslationControl {
-        state.push(state.nesting, state.hold((self.f)(state.col)));
-        TranslationControl::Continue
+impl<D: Doc> Doc for Column<'_, D> {
+    fn translate(&self, state: &mut TransState) -> TranslationControl {
+        (self.f)(state.col).translate(state)
     }
+}
+
+impl<'a, D: 'a> FlattenableDoc for Column<'a, D>
+where
+    D: FlattenableDoc
+{
+    type Flattened = Column<'a, D::Flattened>;
+
+    fn flatten(self) -> Self::Flattened {
+        Column::new(move |col| (self.f)(col).flatten())
+    }
+}
+
+pub fn column<'a, D: Doc, F: 'a>(f: F) -> Column<'a, D>
+where
+    F: Fn(usize) -> D
+{
+    Column::new(f)
 }
