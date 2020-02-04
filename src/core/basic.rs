@@ -1,102 +1,20 @@
 
 use Doc::*;
-use std::rc::Rc;
 use std::fmt::{Display, Formatter, Error};
-use typed_arena::Arena;
 
 #[derive(Clone)]
-pub enum Doc<'a> {
+pub enum Doc {
     Nil,
     Line,
-    Nest(usize, Box<Self>),
+    Nest(i64, Box<Self>),
     Text(String),
     Cat(Box<Self>, Box<Self>),
     Union(Box<Self>, Box<Self>),
     FlatAlt(Box<Self>, Box<Self>),
-    Column(Rc<dyn Fn(usize) -> Self + 'a>),
-    Row(Rc<dyn Fn(usize) -> Self + 'a>),
-    Nesting(Rc<dyn Fn(usize) -> Self + 'a>),
 }
 
-#[derive(Clone)]
-pub struct TransState<'a, 'd> {
-    pub page_width: usize,
-    pub row: usize,
-    pub col: usize,
-    pub index: usize,
-
-    stack: Vec<(usize, &'a Doc<'d>)>,
-    result: SimpleDoc<'a>,
-    holder: &'a Arena<Doc<'d>>,
-}
-
-impl<'a, 'd> TransState<'a, 'd> {
-    pub fn pop(&mut self) -> Option<(usize, &'a Doc<'d>)> {
-        self.stack.pop()
-    }
-
-    pub fn push(&mut self, nested: usize, doc: &'a Doc<'d>) -> &mut Self {
-        self.stack.push((nested, doc));
-        self
-    }
-
-    pub fn append(&mut self, elem: SimpleDocElem<'a>) -> &mut Self {
-        self.result.0.push(elem);
-        self
-    }
-
-    pub fn fits(&self, w: usize) -> bool {
-        self.result.fits(w)
-    }
-
-    pub fn hold(&self, doc: Doc<'d>) -> &'a mut Doc<'d> {
-        self.holder.alloc(doc)
-    }
-}
-
-pub fn nil<'a>() -> Doc<'a> {
-    Nil
-}
-
-pub fn text<'a>(txt: &str) -> Doc<'a> {
-    Text(txt.to_string())
-}
-
-pub fn space<'a>() -> Doc<'a> {
-    text(" ")
-}
-
-pub fn line<'a>() -> Doc<'a> {
-    FlatAlt(Box::new(Line), Box::new(space()))
-}
-
-pub fn hard_line<'a>() -> Doc<'a> {
-    Line
-}
-
-pub fn column<'a, F>(f: F) -> Doc<'a>
-    where
-        F: Fn(usize) -> Doc<'a> + 'a
-{
-    Column(Rc::new(f))
-}
-
-pub fn row<'a, F>(f: F) -> Doc<'a>
-    where
-        F: Fn(usize) -> Doc<'a> + 'a
-{
-    Row(Rc::new(f))
-}
-
-pub fn nesting<'a, F>(f: F) -> Doc<'a>
-    where
-        F: Fn(usize) -> Doc<'a> + 'a
-{
-    Nesting(Rc::new(f))
-}
-
-impl<'a> Doc<'a> {
-    pub fn nest(self, nested: usize) -> Self {
+impl Doc {
+    pub fn nest(self, nested: i64) -> Self {
         Nest(nested, Box::new(self))
     }
 
@@ -122,95 +40,116 @@ impl<'a> Doc<'a> {
             Cat(x, y) => x.flatten().cat(y.flatten()),
             FlatAlt(_, y) => *y,
             Union(x, _) => x.flatten(),
-            Column(f) => column(move |col| f(col).flatten()),
-            Row(f) => row(move |col| f(col).flatten()),
-            Nesting(f) => nesting(move |col| f(col).flatten()),
             other => other,
         }
     }
 
-    pub fn pretty(&self, w: usize) -> String {
-        let mut state = TransState {
+    pub fn pretty(&self, w: i64) -> String {
+        let mut pretty_state = PrettyState {
             page_width: w,
-            row: 0,
-            col: 0,
-            index: 0,
-            stack: vec![(0, self)],
-            result: Default::default(),
-            holder: &Default::default()
+            placed: 0,
+            stack: vec![(0, self)]
         };
-        be(&mut state);
-        format!("{}", state.result)
+        let mut simple = SimpleDoc(vec![]);
+        be(&mut pretty_state, &mut simple);
+        format!("{}", simple)
     }
 }
 
-fn be(state: &mut TransState) {
-    while let Some((nested, doc)) = state.pop() {
-        match doc {
-            Doc::Nil => {}
-            Doc::Line => {
-                state.append(SimpleDocElem::Line(nested));
-                state.row += 1;
-            }
-            Doc::Text(txt) => {
-                state.col += txt.len();
-                state.append(SimpleDocElem::Text(txt));
-            }
-            Doc::Cat(x, y) => {
-                state.push(nested, y)
-                    .push(nested, x);
-            }
-            Doc::Nest(j, x) => {
-                state.push(nested + *j, x);
-                state.col = nested;
-            }
-            Doc::FlatAlt(x, _) => {
-                state.push(nested, x);
-            },
-            Doc::Union(x, y) => {
-                let state_save = state.clone();
+pub fn nil() -> Doc {
+    Nil
+}
 
-                state.push(nested, x);
-                be(state);
-                if state.fits(state_save.page_width - state_save.col) {
+pub fn text(txt: &str) -> Doc {
+    Text(txt.to_string())
+}
+
+pub fn space() -> Doc {
+    text(" ")
+}
+
+pub fn line() -> Doc {
+    FlatAlt(Box::new(Line), Box::new(space()))
+}
+
+pub fn soft_line() -> Doc {
+    line().group()
+}
+
+pub fn hard_line() -> Doc {
+    Line
+}
+
+pub fn line_break() -> Doc {
+    FlatAlt(Box::new(Line), Box::new(nil()))
+}
+
+pub fn soft_line_break() -> Doc {
+    line_break().group()
+}
+
+#[derive(Clone)]
+struct PrettyState<'a> {
+    page_width: i64,
+    placed: i64,
+    stack: Vec<(i64, &'a Doc)>,
+}
+
+fn be<'a>(pretty_state: &mut PrettyState<'a>, result: &mut SimpleDoc<'a>) {
+    while let Some((indent, doc)) = pretty_state.stack.pop() {
+        match doc {
+            Nil => {},
+            Line => {
+                result.0.push(SimpleDocElem::Line(indent));
+                pretty_state.placed = indent;
+            },
+            Nest(j, x) => {
+                pretty_state.stack.push((indent + *j, x));
+            },
+            Text(txt) => {
+                result.0.push(SimpleDocElem::Text(txt));
+                pretty_state.placed += txt.len() as i64;
+            },
+            Cat(x, y) => {
+                pretty_state.stack.push((indent, y));
+                pretty_state.stack.push((indent, x));
+            },
+            Union(x, y) => {
+                let mut pretty_state_clone = pretty_state.clone();
+
+                pretty_state_clone.stack.push((indent, x));
+                let mut x_sd = SimpleDoc(vec![]);
+                be(&mut pretty_state_clone, &mut x_sd);
+                if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
+                    result.0.append(&mut x_sd.0);
                     break;
                 }
 
-                *state = state_save;
-                state.push(nested, y);
-            }
-            Column(f) => {
-                state.push(nested, state.hold(f(state.col)));
-            }
-            Row(f) => {
-                state.push(nested, state.hold(f(state.row)));
-            }
-            Nesting(f) => {
-                state.push(nested, state.hold(f(nested)));
-            }
+                pretty_state.stack.push((indent, y));
+            },
+            FlatAlt(x, _) => {
+                pretty_state.stack.push((indent, x));
+            },
         }
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub enum SimpleDocElem<'a> {
     Text(&'a str),
-    Line(usize),
+    Line(i64),
 }
 
 #[derive(Clone, Default)]
 pub struct SimpleDoc<'a>(pub Vec<SimpleDocElem<'a>>);
 
 impl SimpleDoc<'_> {
-    pub fn fits(&self, mut w: usize) -> bool {
+    pub fn fits(&self, mut w: i64) -> bool {
         for elem in &self.0 {
+            if w < 0 { return false; }
             match elem {
                 SimpleDocElem::Text(txt) => {
-                    if w < txt.len() {
-                        return false;
-                    }
-                    w -= txt.len();
+                    w -= txt.len() as i64;
                 }
                 SimpleDocElem::Line(_) => break,
             }

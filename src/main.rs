@@ -1,71 +1,32 @@
-use typed_arena::Arena;
-use std::borrow::Cow;
 use std::rc::Rc;
-use std::ops::Deref;
-use pprint::core::combinator::{text, column};
-use pprint::core::traits::{Doc, FlattenableDoc};
+use pprint::core::basic::{Doc, text, nil, line, soft_line, line_break};
 
-#[derive(Clone)]
-enum Tree {
-    Static(usize, Box<Tree>, Box<Tree>),
-    Dynamic(usize, Rc<dyn Fn() -> Tree>)
+fn bracket(l: &str, x: Doc, r: &str) -> Doc {
+    text(l).cat(line().cat(x).nest(2)).cat_with_line(text(r)).group()
 }
 
-enum MaybeOwned<'a, T: ?Sized> {
-    Brw(&'a T),
-    Own(Box<T>),
-}
+fn if_block(cond: Doc, consq: Doc, alter: Doc) -> Doc {
+    text("if").cat_with_space(bracket("(", cond, ")"))
 
-impl<'a, T: ?Sized> Deref for MaybeOwned<'a, T> {
-    type Target = T;
+        .cat_with_space(bracket("{", consq, "}"))
+        .cat_with_space(text("else"))
 
-    fn deref(&self) -> &Self::Target {
-        match self {
-            MaybeOwned::Brw(x) => x,
-            MaybeOwned::Own(x) => x,
-        }
-    }
-}
-
-
-
-fn traverse(tree: &Tree) -> Vec<usize> {
-    let mut linear = vec![];
-    let mut stack = vec![Cow::Borrowed(tree)];
-    // let arena = Arena::new();
-    while let Some(node) = stack.pop() {
-        match node {
-            Cow::Borrowed(Tree::Static(n, x, y)) => {
-                linear.push(*n);
-                stack.push(Cow::Borrowed(y));
-                stack.push(Cow::Borrowed(x));
-            },
-            Cow::Borrowed(Tree::Dynamic(n, f)) => {
-                linear.push(*n);
-                stack.push(Cow::Owned(f()));
-            },
-            Cow::Owned(Tree::Static(n, x, y)) => {
-                linear.push(n);
-                stack.push(Cow::Owned(*y));
-                stack.push(Cow::Owned(*x));
-            },
-            Cow::Owned(Tree::Dynamic(n, f)) => {
-                linear.push(n);
-                stack.push(Cow::Owned(f()));
-            }
-        }
-    }
-    linear
+        .cat_with_space(bracket("{", alter, "}"))
+        .group()
 }
 
 fn main() {
-    let test =
-        text("hello")
-        .cat_with_line(text("world"))
-        .nest(2)
-        .cat_with_line(text("!")).group();
+    let test = if_block(
+        text("_"),
+        if_block(
+            text("_"),
+            text("_"),
+            text("_")),
+        if_block(
+            text("_"),
+            text("_"),
+            text("_")));
 
-    let test = column(|_| test).group();
-    let w = 20;
+    let w = 10;
     println!("{}", test.pretty(w));
 }
