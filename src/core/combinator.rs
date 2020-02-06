@@ -37,7 +37,7 @@ impl Doc for Line {
         ret: &mut SimpleDoc,
         cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
     ) {
-        ret.0.push(SimpleDocElem::Line(pretty_state.indent));
+        ret.add(SimpleDocElem::Line(pretty_state.indent));
         let new_state = pretty_state
             .with_row(pretty_state.row + 1)
             .with_placed(pretty_state.indent)
@@ -66,7 +66,7 @@ impl Doc for Text {
         ret: &mut SimpleDoc,
         cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
     ) {
-        ret.0.push(SimpleDocElem::Text(self.txt.clone()));
+        ret.add(SimpleDocElem::Text(self.txt.clone()));
         let new_state = pretty_state
             .with_col(pretty_state.col + self.txt.len() as i64)
             .with_placed(pretty_state.placed + self.txt.len() as i64)
@@ -189,10 +189,10 @@ impl<A: Doc, B: Doc> Doc for Union<A, B> {
         ret: &mut SimpleDoc,
         cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
     ) {
-        let mut x_sd = SimpleDoc(vec![]);
+        let mut x_sd = SimpleDoc::default();
         self.a.best(pretty_state, &mut x_sd, cont);
         if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
-            ret.0.append(&mut x_sd.0);
+            ret.append(x_sd);
         } else {
             self.b.best(pretty_state, ret, cont);
         }

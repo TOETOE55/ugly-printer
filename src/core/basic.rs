@@ -1,5 +1,5 @@
-use std::fmt::{Display, Error, Formatter};
 use Doc::*;
+use crate::core::traits::{SimpleDoc, SimpleDocElem};
 
 #[derive(Clone)]
 pub enum Doc {
@@ -49,7 +49,7 @@ impl Doc {
             placed: 0,
             stack: vec![(0, self)],
         };
-        let mut simple = SimpleDoc(vec![]);
+        let mut simple = SimpleDoc::default();
         be(&mut pretty_state, &mut simple);
         format!("{}", simple)
     }
@@ -60,7 +60,7 @@ impl Doc {
             placed: 0,
             indent: 0,
         };
-        let mut simple = SimpleDoc(vec![]);
+        let mut simple = SimpleDoc::default();
         be_cps(self, pretty_state, &mut simple, &|_, _| {});
         format!("{}", simple)
     }
@@ -110,14 +110,14 @@ fn be(pretty_state: &mut PrettyState, ret: &mut SimpleDoc) {
         match doc {
             Nil => {}
             Line => {
-                ret.0.push(SimpleDocElem::Line(indent));
+                ret.add(SimpleDocElem::Line(indent));
                 pretty_state.placed = indent;
             }
             Nest(j, x) => {
                 pretty_state.stack.push((indent + *j, x));
             }
             Text(txt) => {
-                ret.0.push(SimpleDocElem::Text(txt.to_string()));
+                ret.add(SimpleDocElem::Text(txt.to_string()));
                 pretty_state.placed += txt.len() as i64;
             }
             Cat(x, y) => {
@@ -128,10 +128,10 @@ fn be(pretty_state: &mut PrettyState, ret: &mut SimpleDoc) {
                 let mut pretty_state_clone = pretty_state.clone();
 
                 pretty_state_clone.stack.push((indent, x));
-                let mut x_sd = SimpleDoc(vec![]);
+                let mut x_sd = SimpleDoc::default();
                 be(&mut pretty_state_clone, &mut x_sd);
                 if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
-                    ret.0.append(&mut x_sd.0);
+                    ret.append(x_sd);
                     break;
                 }
 
@@ -160,7 +160,7 @@ fn be_cps(
     match doc {
         Nil => k(pretty_state, ret),
         Line => {
-            ret.0.push(SimpleDocElem::Line(pretty_state.indent));
+            ret.add(SimpleDocElem::Line(pretty_state.indent));
             k(
                 PrettyStateCPS {
                     placed: pretty_state.indent,
@@ -179,7 +179,7 @@ fn be_cps(
             &|_, ret| k(pretty_state, ret),
         ),
         Text(txt) => {
-            ret.0.push(SimpleDocElem::Text(txt.to_string()));
+            ret.add(SimpleDocElem::Text(txt.to_string()));
             k(
                 PrettyStateCPS {
                     placed: pretty_state.placed + txt.len() as i64,
@@ -194,55 +194,14 @@ fn be_cps(
             });
         }
         Union(x, y) => {
-            let mut x_sd = SimpleDoc(vec![]);
+            let mut x_sd = SimpleDoc::default();
             be_cps(x, pretty_state, &mut x_sd, k);
             if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
-                ret.0.append(&mut x_sd.0);
+                ret.append(x_sd);
             } else {
                 be_cps(y, pretty_state, ret, k);
             }
         }
         FlatAlt(doc, _) => be_cps(doc, pretty_state, ret, k),
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum SimpleDocElem {
-    Text(String),
-    Line(i64),
-}
-
-#[derive(Clone, Default)]
-pub struct SimpleDoc(pub Vec<SimpleDocElem>);
-
-impl SimpleDoc {
-    pub fn fits(&self, mut w: i64) -> bool {
-        for elem in &self.0 {
-            if w < 0 {
-                return false;
-            }
-            match elem {
-                SimpleDocElem::Text(txt) => {
-                    w -= txt.len() as i64;
-                }
-                SimpleDocElem::Line(_) => break,
-            }
-        }
-        true
-    }
-}
-
-impl Display for SimpleDoc {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        for elem in &self.0 {
-            match elem {
-                SimpleDocElem::Text(s) => write!(f, "{}", s)?,
-                SimpleDocElem::Line(nested) => {
-                    let spaces = vec![' '; *nested as usize].into_iter().collect::<String>();
-                    write!(f, "\n{}", spaces)?
-                }
-            }
-        }
-        Ok(())
     }
 }

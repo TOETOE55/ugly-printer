@@ -157,7 +157,7 @@ pub enum SimpleDocElem {
 }
 
 #[derive(Clone, Default)]
-pub struct SimpleDoc(pub Vec<SimpleDocElem>);
+pub struct SimpleDoc(Vec<SimpleDocElem>);
 
 impl SimpleDoc {
     pub fn fits(&self, mut w: i64) -> bool {
@@ -174,6 +174,14 @@ impl SimpleDoc {
         }
         true
     }
+
+    pub fn add(&mut self, elem: SimpleDocElem) {
+        self.0.push(elem)
+    }
+
+    pub fn append(&mut self, mut other: Self) {
+        self.0.append(&mut other.0)
+    }
 }
 
 impl Display for SimpleDoc {
@@ -188,5 +196,14 @@ impl Display for SimpleDoc {
             }
         }
         Ok(())
+    }
+}
+
+impl IntoIterator for SimpleDoc {
+    type Item = SimpleDocElem;
+    type IntoIter = std::vec::IntoIter<SimpleDocElem>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
