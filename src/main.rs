@@ -27,6 +27,6 @@ fn main() {
             text("_"),
             text("_")));
 
-    let w = 10;
-    println!("{}", test.pretty(w));
+    let w = 20;
+    println!("{}", test.pretty_cps(w));
 }

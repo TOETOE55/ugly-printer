@@ -54,6 +54,16 @@ impl Doc {
         be(&mut pretty_state, &mut simple);
         format!("{}", simple)
     }
+
+    pub fn pretty_cps(&self, w: i64) -> String {
+        let mut pretty_state = PrettyStateCPS {
+            page_width: w,
+            placed: 0,
+        };
+        let mut simple = SimpleDoc(vec![]);
+        be_cps(self, 0, &mut pretty_state, &mut simple, &mut |_, _| {});
+        format!("{}", simple)
+    }
 }
 
 pub fn nil() -> Doc {
@@ -95,19 +105,19 @@ struct PrettyState<'a> {
     stack: Vec<(i64, &'a Doc)>,
 }
 
-fn be<'a>(pretty_state: &mut PrettyState<'a>, result: &mut SimpleDoc<'a>) {
+fn be<'a>(pretty_state: &mut PrettyState<'a>, ret: &mut SimpleDoc<'a>) {
     while let Some((indent, doc)) = pretty_state.stack.pop() {
         match doc {
             Nil => {},
             Line => {
-                result.0.push(SimpleDocElem::Line(indent));
+                ret.0.push(SimpleDocElem::Line(indent));
                 pretty_state.placed = indent;
             },
             Nest(j, x) => {
                 pretty_state.stack.push((indent + *j, x));
             },
             Text(txt) => {
-                result.0.push(SimpleDocElem::Text(txt));
+                ret.0.push(SimpleDocElem::Text(txt));
                 pretty_state.placed += txt.len() as i64;
             },
             Cat(x, y) => {
@@ -121,7 +131,7 @@ fn be<'a>(pretty_state: &mut PrettyState<'a>, result: &mut SimpleDoc<'a>) {
                 let mut x_sd = SimpleDoc(vec![]);
                 be(&mut pretty_state_clone, &mut x_sd);
                 if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
-                    result.0.append(&mut x_sd.0);
+                    ret.0.append(&mut x_sd.0);
                     break;
                 }
 
@@ -131,6 +141,55 @@ fn be<'a>(pretty_state: &mut PrettyState<'a>, result: &mut SimpleDoc<'a>) {
                 pretty_state.stack.push((indent, x));
             },
         }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct PrettyStateCPS {
+    page_width: i64,
+    placed: i64,
+}
+
+fn be_cps<'a>(
+    doc: &'a Doc,
+    indent: i64,
+    pretty_state: &mut PrettyStateCPS,
+    ret: &mut SimpleDoc<'a>,
+    k: &impl Fn(&mut PrettyStateCPS, &mut SimpleDoc<'a>)) {
+    match doc {
+        Nil => {
+            k(pretty_state, ret)
+        },
+        Line => {
+            ret.0.push(SimpleDocElem::Line(indent));
+            pretty_state.placed = indent;
+            k(pretty_state, ret);
+        },
+        Nest(j, x) => {
+            be_cps(x, indent+*j, pretty_state, ret, k)
+        },
+        Text(txt) => {
+            ret.0.push(SimpleDocElem::Text(txt));
+            pretty_state.placed += txt.len() as i64;
+            k(pretty_state, ret);
+        },
+        Cat(x, y) => {
+            be_cps(x, indent, pretty_state, ret, &|pretty_state, ret|
+                be_cps(y, indent, pretty_state, ret, k));
+        },
+        Union(x, y) => {
+            let mut pretty_state_clone = pretty_state.clone();
+            let mut x_sd = SimpleDoc(vec![]);
+            be_cps(x, indent, &mut pretty_state_clone, &mut x_sd, k);
+            if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
+                ret.0.append(&mut x_sd.0);
+            } else {
+                be_cps(y, indent, pretty_state, ret, k);
+            }
+        },
+        FlatAlt(doc, _) => {
+            be_cps(doc, indent, pretty_state, ret, k)
+        },
     }
 }
 
