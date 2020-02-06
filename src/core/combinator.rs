@@ -1,12 +1,17 @@
-use crate::core::traits::{Doc, SimpleDocElem, TranslationControl, FlattenableDoc, TransState, SimpleDoc};
+use crate::core::traits::{Doc, FlattenableDoc, PrettyState, SimpleDoc, SimpleDocElem};
 use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Empty;
 
 impl Doc for Empty {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        TranslationControl::Continue
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        cont(pretty_state, ret)
     }
 }
 
@@ -26,11 +31,18 @@ pub fn empty() -> Empty {
 pub struct Line;
 
 impl Doc for Line {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        result.0.push(SimpleDocElem::Line(state.nesting));
-        state.row += 1;
-        state.index += 1;
-        TranslationControl::Continue
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        ret.0.push(SimpleDocElem::Line(pretty_state.indent));
+        let new_state = pretty_state
+            .with_row(pretty_state.row + 1)
+            .with_placed(pretty_state.indent)
+            .with_index(pretty_state.index + 1);
+        cont(new_state, ret);
     }
 }
 
@@ -42,21 +54,28 @@ impl FlattenableDoc for Line {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Text<'a> {
-    txt: &'a str,
+#[derive(Clone, Debug)]
+pub struct Text {
+    txt: String,
 }
 
-impl Doc for Text<'_> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        result.0.push(SimpleDocElem::Text(self.txt));
-        state.col += self.txt.len() as i64;
-        state.index += self.txt.len() as i64;
-        TranslationControl::Continue
+impl Doc for Text {
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        ret.0.push(SimpleDocElem::Text(self.txt.clone()));
+        let new_state = pretty_state
+            .with_col(pretty_state.col + self.txt.len() as i64)
+            .with_placed(pretty_state.placed + self.txt.len() as i64)
+            .with_index(pretty_state.index + self.txt.len() as i64);
+        cont(new_state, ret)
     }
 }
 
-impl FlattenableDoc for Text<'_> {
+impl FlattenableDoc for Text {
     type Flattened = Self;
 
     fn flatten(self) -> Self::Flattened {
@@ -65,14 +84,16 @@ impl FlattenableDoc for Text<'_> {
 }
 
 pub fn text(txt: &str) -> Text {
-    Text { txt }
+    Text {
+        txt: txt.to_string(),
+    }
 }
 
-pub fn space() -> Text<'static> {
+pub fn space() -> Text {
     text(" ")
 }
 
-pub fn line() -> FlatAlt<Line, Text<'static>> {
+pub fn line() -> FlatAlt<Line, Text> {
     FlatAlt::new(Line, space())
 }
 
@@ -93,10 +114,18 @@ impl<D> Nest<D> {
 }
 
 impl<D: Doc> Doc for Nest<D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        state.col = state.nesting;
-        state.nesting += self.nest;
-        self.doc.translate(state, result)
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        let new_state = pretty_state
+            .with_col(pretty_state.placed)
+            .with_indent(pretty_state.indent + self.nest);
+        self.doc.best(new_state, ret, &mut |state, ret| {
+            cont(state.with_indent(pretty_state.indent), ret)
+        });
     }
 }
 
@@ -121,9 +150,15 @@ impl<A, B> Cat<A, B> {
 }
 
 impl<A: Doc, B: Doc> Doc for Cat<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        self.a.translate(state, result)?;
-        self.b.translate(state, result)
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        self.a.best(pretty_state, ret, &mut |pretty_state, ret| {
+            self.b.best(pretty_state, ret, cont)
+        });
     }
 }
 
@@ -148,15 +183,19 @@ impl<A, B> Union<A, B> {
 }
 
 impl<A: Doc, B: Doc> Doc for Union<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        let mut state_saved = state.clone();
-
-        self.a.translate(&mut state_saved, result)?;
-        if result.fits(state.page_width - state.col) {
-            return TranslationControl::Break;
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        let mut x_sd = SimpleDoc(vec![]);
+        self.a.best(pretty_state, &mut x_sd, cont);
+        if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
+            ret.0.append(&mut x_sd.0);
+        } else {
+            self.b.best(pretty_state, ret, cont);
         }
-
-        self.b.translate(state, result)
     }
 }
 
@@ -180,9 +219,14 @@ impl<A, B> FlatAlt<A, B> {
     }
 }
 
-impl<A: Doc, B> Doc for FlatAlt<A, B> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        self.a.translate(state, result)
+impl<A: Doc, B: Clone> Doc for FlatAlt<A, B> {
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        self.a.best(pretty_state, ret, cont);
     }
 }
 
@@ -193,39 +237,40 @@ impl<A: Doc + Clone, B: FlattenableDoc> FlattenableDoc for FlatAlt<A, B> {
         self.b.flatten()
     }
 }
-/*
+
 pub struct Column<'a, D> {
-    f: Rc<dyn Fn(i64) -> D + 'a>
+    f: Rc<dyn Fn(i64) -> D + 'a>,
 }
 
 impl<'a, D> Column<'a, D> {
     pub fn new<F>(f: F) -> Self
     where
-        F: Fn(i64) -> D + 'a
+        F: Fn(i64) -> D + 'a,
     {
-        Self {
-            f: Rc::new(f)
-        }
+        Self { f: Rc::new(f) }
     }
 }
 
-impl<D> Clone for Column<'_ ,D> {
+impl<D> Clone for Column<'_, D> {
     fn clone(&self) -> Self {
-        Self {
-            f: self.f.clone()
-        }
+        Self { f: self.f.clone() }
     }
 }
 
 impl<D: Doc> Doc for Column<'_, D> {
-    fn translate<'a>(&'a self, state: &mut TransState<'a>, result: &mut SimpleDoc<'a>) -> TranslationControl {
-        (self.f)(state.col).translate(state,result)
+    fn best(
+        &self,
+        pretty_state: PrettyState,
+        ret: &mut SimpleDoc,
+        cont: &mut dyn FnMut(PrettyState, &mut SimpleDoc),
+    ) {
+        (self.f)(pretty_state.col).best(pretty_state, ret, cont)
     }
 }
 
 impl<'a, D: 'a> FlattenableDoc for Column<'a, D>
 where
-    D: FlattenableDoc
+    D: FlattenableDoc,
 {
     type Flattened = Column<'a, D::Flattened>;
 
@@ -236,8 +281,7 @@ where
 
 pub fn column<'a, D: Doc, F: 'a>(f: F) -> Column<'a, D>
 where
-    F: Fn(i64) -> D
+    F: Fn(i64) -> D,
 {
     Column::new(f)
 }
-*/

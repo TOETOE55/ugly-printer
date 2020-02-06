@@ -1,6 +1,5 @@
-
+use std::fmt::{Display, Error, Formatter};
 use Doc::*;
-use std::fmt::{Display, Formatter, Error};
 
 #[derive(Clone)]
 pub enum Doc {
@@ -48,7 +47,7 @@ impl Doc {
         let mut pretty_state = PrettyState {
             page_width: w,
             placed: 0,
-            stack: vec![(0, self)]
+            stack: vec![(0, self)],
         };
         let mut simple = SimpleDoc(vec![]);
         be(&mut pretty_state, &mut simple);
@@ -56,12 +55,13 @@ impl Doc {
     }
 
     pub fn pretty_cps(&self, w: i64) -> String {
-        let mut pretty_state = PrettyStateCPS {
+        let pretty_state = PrettyStateCPS {
             page_width: w,
             placed: 0,
+            indent: 0,
         };
         let mut simple = SimpleDoc(vec![]);
-        be_cps(self, 0, &mut pretty_state, &mut simple, &mut |_, _| {});
+        be_cps(self, pretty_state, &mut simple, &|_, _| {});
         format!("{}", simple)
     }
 }
@@ -105,25 +105,25 @@ struct PrettyState<'a> {
     stack: Vec<(i64, &'a Doc)>,
 }
 
-fn be<'a>(pretty_state: &mut PrettyState<'a>, ret: &mut SimpleDoc<'a>) {
+fn be(pretty_state: &mut PrettyState, ret: &mut SimpleDoc) {
     while let Some((indent, doc)) = pretty_state.stack.pop() {
         match doc {
-            Nil => {},
+            Nil => {}
             Line => {
                 ret.0.push(SimpleDocElem::Line(indent));
                 pretty_state.placed = indent;
-            },
+            }
             Nest(j, x) => {
                 pretty_state.stack.push((indent + *j, x));
-            },
+            }
             Text(txt) => {
-                ret.0.push(SimpleDocElem::Text(txt));
+                ret.0.push(SimpleDocElem::Text(txt.to_string()));
                 pretty_state.placed += txt.len() as i64;
-            },
+            }
             Cat(x, y) => {
                 pretty_state.stack.push((indent, y));
                 pretty_state.stack.push((indent, x));
-            },
+            }
             Union(x, y) => {
                 let mut pretty_state_clone = pretty_state.clone();
 
@@ -136,10 +136,10 @@ fn be<'a>(pretty_state: &mut PrettyState<'a>, ret: &mut SimpleDoc<'a>) {
                 }
 
                 pretty_state.stack.push((indent, y));
-            },
+            }
             FlatAlt(x, _) => {
                 pretty_state.stack.push((indent, x));
-            },
+            }
         }
     }
 }
@@ -148,64 +148,79 @@ fn be<'a>(pretty_state: &mut PrettyState<'a>, ret: &mut SimpleDoc<'a>) {
 struct PrettyStateCPS {
     page_width: i64,
     placed: i64,
+    indent: i64,
 }
 
-fn be_cps<'a>(
-    doc: &'a Doc,
-    indent: i64,
-    pretty_state: &mut PrettyStateCPS,
-    ret: &mut SimpleDoc<'a>,
-    k: &impl Fn(&mut PrettyStateCPS, &mut SimpleDoc<'a>)) {
+fn be_cps(
+    doc: &Doc,
+    pretty_state: PrettyStateCPS,
+    ret: &mut SimpleDoc,
+    k: &dyn Fn(PrettyStateCPS, &mut SimpleDoc),
+) {
     match doc {
-        Nil => {
-            k(pretty_state, ret)
-        },
+        Nil => k(pretty_state, ret),
         Line => {
-            ret.0.push(SimpleDocElem::Line(indent));
-            pretty_state.placed = indent;
-            k(pretty_state, ret);
-        },
-        Nest(j, x) => {
-            be_cps(x, indent+*j, pretty_state, ret, k)
-        },
+            ret.0.push(SimpleDocElem::Line(pretty_state.indent));
+            k(
+                PrettyStateCPS {
+                    placed: pretty_state.indent,
+                    ..pretty_state
+                },
+                ret,
+            );
+        }
+        Nest(j, x) => be_cps(
+            x,
+            PrettyStateCPS {
+                indent: pretty_state.indent + *j,
+                ..pretty_state
+            },
+            ret,
+            &|_, ret| k(pretty_state, ret),
+        ),
         Text(txt) => {
-            ret.0.push(SimpleDocElem::Text(txt));
-            pretty_state.placed += txt.len() as i64;
-            k(pretty_state, ret);
-        },
+            ret.0.push(SimpleDocElem::Text(txt.to_string()));
+            k(
+                PrettyStateCPS {
+                    placed: pretty_state.placed + txt.len() as i64,
+                    ..pretty_state
+                },
+                ret,
+            );
+        }
         Cat(x, y) => {
-            be_cps(x, indent, pretty_state, ret, &|pretty_state, ret|
-                be_cps(y, indent, pretty_state, ret, k));
-        },
+            be_cps(x, pretty_state, ret, &|pretty_state, ret| {
+                be_cps(y, pretty_state, ret, k)
+            });
+        }
         Union(x, y) => {
-            let mut pretty_state_clone = pretty_state.clone();
             let mut x_sd = SimpleDoc(vec![]);
-            be_cps(x, indent, &mut pretty_state_clone, &mut x_sd, k);
+            be_cps(x, pretty_state, &mut x_sd, k);
             if x_sd.fits(pretty_state.page_width - pretty_state.placed) {
                 ret.0.append(&mut x_sd.0);
             } else {
-                be_cps(y, indent, pretty_state, ret, k);
+                be_cps(y, pretty_state, ret, k);
             }
-        },
-        FlatAlt(doc, _) => {
-            be_cps(doc, indent, pretty_state, ret, k)
-        },
+        }
+        FlatAlt(doc, _) => be_cps(doc, pretty_state, ret, k),
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum SimpleDocElem<'a> {
-    Text(&'a str),
+pub enum SimpleDocElem {
+    Text(String),
     Line(i64),
 }
 
 #[derive(Clone, Default)]
-pub struct SimpleDoc<'a>(pub Vec<SimpleDocElem<'a>>);
+pub struct SimpleDoc(pub Vec<SimpleDocElem>);
 
-impl SimpleDoc<'_> {
+impl SimpleDoc {
     pub fn fits(&self, mut w: i64) -> bool {
         for elem in &self.0 {
-            if w < 0 { return false; }
+            if w < 0 {
+                return false;
+            }
             match elem {
                 SimpleDocElem::Text(txt) => {
                     w -= txt.len() as i64;
@@ -217,7 +232,7 @@ impl SimpleDoc<'_> {
     }
 }
 
-impl Display for SimpleDoc<'_> {
+impl Display for SimpleDoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         for elem in &self.0 {
             match elem {
